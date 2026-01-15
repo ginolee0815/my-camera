@@ -11,7 +11,9 @@
 /.idea/assetWizardSettings.xml
 .DS_Store
 /build
+/logcat_
 /captures
+/debug
 .externalNativeBuild
 .cxx
 local.properties
