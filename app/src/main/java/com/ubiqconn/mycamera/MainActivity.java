@@ -104,6 +104,64 @@ public class MainActivity extends AppCompatActivity {
             ActivityCompat.requestPermissions(this, new String[] { Manifest.permission.CAMERA },
                     REQUEST_CAMERA_PERMISSION);
         }
+
+        updateLayoutForScreenAspectRatio();
+    }
+
+    @Override
+    public void onConfigurationChanged(@NonNull android.content.res.Configuration newConfig) {
+        super.onConfigurationChanged(newConfig);
+        updateLayoutForScreenAspectRatio();
+    }
+
+    private void updateLayoutForScreenAspectRatio() {
+        android.util.DisplayMetrics metrics = new android.util.DisplayMetrics();
+        getWindowManager().getDefaultDisplay().getMetrics(metrics);
+
+        int width = metrics.widthPixels;
+        int height = metrics.heightPixels;
+
+        android.widget.LinearLayout root = findViewById(R.id.main_container);
+        android.widget.FrameLayout container1 = findViewById(R.id.container_1);
+        android.widget.FrameLayout container2 = findViewById(R.id.container_2);
+
+        if (root == null || container1 == null || container2 == null)
+            return;
+
+        android.widget.LinearLayout.LayoutParams params1 = (android.widget.LinearLayout.LayoutParams) container1
+                .getLayoutParams();
+        android.widget.LinearLayout.LayoutParams params2 = (android.widget.LinearLayout.LayoutParams) container2
+                .getLayoutParams();
+
+        if (width > height) {
+            // Landscape-ish: Split Horizontally (Left/Right)
+            root.setOrientation(android.widget.LinearLayout.HORIZONTAL);
+
+            // Width = 0, Weight = 1, Height = Match Parent
+            params1.width = 0;
+            params1.height = android.view.ViewGroup.LayoutParams.MATCH_PARENT;
+            params1.weight = 1;
+
+            params2.width = 0;
+            params2.height = android.view.ViewGroup.LayoutParams.MATCH_PARENT;
+            params2.weight = 1;
+        } else {
+            // Portrait-ish: Split Vertically (Top/Bottom)
+            root.setOrientation(android.widget.LinearLayout.VERTICAL);
+
+            // Width = Match Parent, Height = 0, Weight = 1
+            params1.width = android.view.ViewGroup.LayoutParams.MATCH_PARENT;
+            params1.height = 0;
+            params1.weight = 1;
+
+            params2.width = android.view.ViewGroup.LayoutParams.MATCH_PARENT;
+            params2.height = 0;
+            params2.weight = 1;
+        }
+
+        container1.setLayoutParams(params1);
+        container2.setLayoutParams(params2);
+        root.requestLayout();
     }
 
     @Override
