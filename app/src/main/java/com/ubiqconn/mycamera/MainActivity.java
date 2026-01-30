@@ -62,11 +62,15 @@ public class MainActivity extends AppCompatActivity {
     private Map<String, ImageReader> mImageReaders = new HashMap<>();
     private Map<String, ObjectDetector> mObjectDetectors = new HashMap<>();
     private java.util.concurrent.ConcurrentHashMap<String, Boolean> mIsProcessingFrames = new java.util.concurrent.ConcurrentHashMap<>();
+    private final Object mLock = new Object();
+    private final java.util.concurrent.locks.ReentrantReadWriteLock mDetectorLock = new java.util.concurrent.locks.ReentrantReadWriteLock();
+    private boolean mIsPaused = true;
 
     private void initObjectDetector(String cameraId) {
         try {
             BaseOptions.Builder baseOptionsBuilder = BaseOptions.builder()
-                    .setModelAssetPath("efficientdet_lite0.tflite");
+                    .setModelAssetPath("efficientdet_lite0.tflite")
+                    .setDelegate(com.google.mediapipe.tasks.core.Delegate.CPU);
 
             ObjectDetectorOptions options = ObjectDetectorOptions.builder()
                     .setBaseOptions(baseOptionsBuilder.build())
@@ -91,6 +95,7 @@ public class MainActivity extends AppCompatActivity {
     @Override
     protected void onCreate(Bundle savedInstanceState) {
         super.onCreate(savedInstanceState);
+        getWindow().addFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON);
         setContentView(R.layout.activity_main);
 
         mTextureView1 = findViewById(R.id.texture_view_1);
@@ -214,40 +219,23 @@ public class MainActivity extends AppCompatActivity {
                 }
             }
 
-            if (mCameraIds.length < 2) {
-                Toast.makeText(this, "This device has less than two cameras.", Toast.LENGTH_LONG).show();
-                // Hide the second texture view if there's only one camera
-                mTextureView2.setVisibility(View.GONE);
-                if (mCameraIds.length > 0) {
-                    if (mTextureView1.isAvailable()) {
-                        openCamera(mCameraIds[0], mTextureView1);
-                    } else {
-                        mTextureView1
-                                .setSurfaceTextureListener(createSurfaceTextureListener(mCameraIds[0], mTextureView1));
-                    }
-                }
+            if (mCameraIds.length == 0) {
+                Toast.makeText(this, "This device has no camera.", Toast.LENGTH_LONG).show();
                 return;
             }
 
-            boolean concurrentSupport = false;
-            if (android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.R) {
-                try {
-                    Set<Set<String>> concurrentCameraIdCombinations = mCameraManager.getConcurrentCameraIds();
-                    Log.d("CAMERA", "ConcurrentCameraIds " + concurrentCameraIdCombinations.size());
-                    for (Set<String> combination : concurrentCameraIdCombinations) {
-                        Log.i("MainActivity", "CameraId: " + combination);
-                        if (combination.contains(mCameraIds[0]) && combination.contains(mCameraIds[1])) {
-                            concurrentSupport = true;
-                            break;
-                        }
-                    }
-                } catch (CameraAccessException e) {
-                    e.printStackTrace();
+            if (mCameraIds.length == 1) {
+                Toast.makeText(this, "This device has one camera.", Toast.LENGTH_LONG).show();
+                // Hide the second texture view if there's only one camera
+                mTextureView2.setVisibility(View.GONE);
+                if (mTextureView1.isAvailable()) {
+                    openCamera(mCameraIds[0], mTextureView1);
+                } else {
+                    mTextureView1
+                            .setSurfaceTextureListener(createSurfaceTextureListener(mCameraIds[0], mTextureView1));
                 }
-            }
-
-            if (concurrentSupport) {
-                Toast.makeText(this, "Device supports concurrent cameras.", Toast.LENGTH_SHORT).show();
+            } else if (mCameraIds.length >= 2) {
+                Toast.makeText(this, "This device has multiple cameras. Using first two.", Toast.LENGTH_LONG).show();
                 if (mTextureView1.isAvailable()) {
                     openCamera(mCameraIds[0], mTextureView1);
                 } else {
@@ -258,15 +246,6 @@ public class MainActivity extends AppCompatActivity {
                     openCamera(mCameraIds[1], mTextureView2);
                 } else {
                     mTextureView2.setSurfaceTextureListener(createSurfaceTextureListener(mCameraIds[1], mTextureView2));
-                }
-            } else {
-                Toast.makeText(this, "Device does not support concurrent cameras. Opening one camera.",
-                        Toast.LENGTH_LONG).show();
-                mTextureView2.setVisibility(View.GONE);
-                if (mTextureView1.isAvailable()) {
-                    openCamera(mCameraIds[0], mTextureView1);
-                } else {
-                    mTextureView1.setSurfaceTextureListener(createSurfaceTextureListener(mCameraIds[0], mTextureView1));
                 }
             }
 
@@ -354,33 +333,35 @@ public class MainActivity extends AppCompatActivity {
         return new CameraDevice.StateCallback() {
             @Override
             public void onOpened(@NonNull CameraDevice camera) {
-                mCameraDevices.put(cameraId, camera);
+                synchronized (mLock) {
+                    if (mIsPaused) {
+                        camera.close();
+                        return;
+                    }
+                    mCameraDevices.put(cameraId, camera);
+                }
                 createCameraPreviewSession(cameraId, textureView);
             }
 
             @Override
             public void onDisconnected(@NonNull CameraDevice camera) {
+                Log.i("CameraStateCallback.onDisconnected", "CameraDevice onDisconnected: " + camera.getId());
                 camera.close();
-                mCameraDevices.remove(cameraId);
+                synchronized (mLock) {
+                    mCameraDevices.remove(cameraId);
+                }
             }
 
             @Override
             public void onError(@NonNull CameraDevice camera, int error) {
+                Log.i("CameraStateCallback.onError", "CameraDevice onError: " + camera.getId() + " error - " + error);
                 camera.close();
-                mCameraDevices.remove(cameraId);
+                synchronized (mLock) {
+                    mCameraDevices.remove(cameraId);
+                }
             }
         };
     }
-
-    /*
-     * private ObjectDetector createObjectDetector() {
-     * ObjectDetectorOptions options = new ObjectDetectorOptions.Builder()
-     * .setDetectorMode(ObjectDetectorOptions.STREAM_MODE)
-     * .enableClassification()
-     * .build();
-     * return ObjectDetection.getClient(options);
-     * }
-     */
 
     private void createCameraPreviewSession(String cameraId, TextureView textureView) {
         try {
@@ -513,42 +494,69 @@ public class MainActivity extends AppCompatActivity {
         mIsProcessingFrames.put(cameraId, true);
 
         try {
-            if (!mObjectDetectors.containsKey(cameraId)) {
-                initObjectDetector(cameraId);
-            }
-
-            ObjectDetector detector = mObjectDetectors.get(cameraId);
-            if (detector != null) {
-                // Bitmap from TextureView is ARGB_8888 by default.
-                MPImage mpImage = new com.google.mediapipe.framework.image.BitmapImageBuilder(bitmap).build();
-
-                com.google.mediapipe.tasks.vision.core.ImageProcessingOptions imageProcessingOptions = com.google.mediapipe.tasks.vision.core.ImageProcessingOptions
-                        .builder()
-                        .setRotationDegrees(0) // TextureView bitmap is already oriented
-                        .build();
-
-                // Synchronous detection
-                ObjectDetectionResult result = detector.detect(mpImage, imageProcessingOptions);
-
-                runOnUiThread(() -> {
-                    OverlayView targetOverlay = null;
-                    if (mCameraIds.length > 0 && cameraId.equals(mCameraIds[0]))
-                        targetOverlay = mOverlayView1;
-                    else if (mCameraIds.length > 1 && cameraId.equals(mCameraIds[1]))
-                        targetOverlay = mOverlayView2;
-
-                    if (targetOverlay != null) {
-                        int displayWidth = bitmap.getWidth();
-                        int displayHeight = bitmap.getHeight();
-
-                        if (result.detections() != null && !result.detections().isEmpty()) {
-                            Log.d("MediaPipe", "Detected: " + result.detections().size());
+            ObjectDetector detector = null;
+            mDetectorLock.readLock().lock();
+            try {
+                detector = mObjectDetectors.get(cameraId);
+                if (detector == null) {
+                    mDetectorLock.readLock().unlock();
+                    mDetectorLock.writeLock().lock();
+                    try {
+                        if (!mObjectDetectors.containsKey(cameraId)) {
+                            initObjectDetector(cameraId);
                         }
-
-                        targetOverlay.setResults(result.detections(), displayHeight,
-                                displayWidth);
+                        detector = mObjectDetectors.get(cameraId);
+                        // Downgrade to ReadLock before releasing WriteLock
+                        mDetectorLock.readLock().lock();
+                    } finally {
+                        mDetectorLock.writeLock().unlock();
                     }
-                });
+                }
+
+                if (detector != null) {
+                    // Bitmap from TextureView is ARGB_8888 by default.
+                    MPImage mpImage = new com.google.mediapipe.framework.image.BitmapImageBuilder(bitmap).build();
+
+                    com.google.mediapipe.tasks.vision.core.ImageProcessingOptions imageProcessingOptions = com.google.mediapipe.tasks.vision.core.ImageProcessingOptions
+                            .builder()
+                            .setRotationDegrees(0) // TextureView bitmap is already oriented
+                            .build();
+
+                    // Synchronous detection protected by ReadLock
+                    // This ensures detector is not closed while we are using it
+                    ObjectDetectionResult result = detector.detect(mpImage, imageProcessingOptions);
+
+                    runOnUiThread(() -> {
+                        OverlayView targetOverlay = null;
+                        if (mCameraIds.length > 0 && cameraId.equals(mCameraIds[0]))
+                            targetOverlay = mOverlayView1;
+                        else if (mCameraIds.length > 1 && cameraId.equals(mCameraIds[1]))
+                            targetOverlay = mOverlayView2;
+
+                        if (targetOverlay != null) {
+                            int displayWidth = bitmap.getWidth();
+                            int displayHeight = bitmap.getHeight();
+
+                            if (result.detections() != null && !result.detections().isEmpty()) {
+                                // Log.d("MediaPipe", "Detected: " + result.detections().size());
+                            }
+
+                            targetOverlay.setResults(result.detections(), displayHeight, displayWidth);
+                        }
+                    });
+                }
+            } finally {
+                // Ensure we unlock ONLY if we hold the lock
+                // The logic above involving lock downgrading is complex and error-prone.
+                // Simplified logic: If we are here, we MUST hold the read lock if we didn't
+                // crash.
+                // But check hold count to be safe against double unlocks if logic flows
+                // weirdly.
+                // Actually, ReentrantReadWriteLock allows checking if write lock is held by
+                // current thread.
+                // If we downgraded, we hold Read.
+                // If we didn't enter the write-lock block, we hold Read.
+                mDetectorLock.readLock().unlock();
             }
         } catch (Exception e) {
             Log.e("MediaPipe", "Error processing image: " + e.toString(), e);
@@ -680,35 +688,49 @@ public class MainActivity extends AppCompatActivity {
     }
 
     private void closeCameras() {
-        for (String id : mCaptureSessions.keySet()) {
-            CameraCaptureSession session = mCaptureSessions.get(id);
-            if (session != null) {
-                session.close();
+        synchronized (mLock) {
+            for (String id : mCaptureSessions.keySet()) {
+                CameraCaptureSession session = mCaptureSessions.get(id);
+                if (session != null) {
+                    session.close();
+                }
             }
-        }
-        mCaptureSessions.clear();
+            mCaptureSessions.clear();
 
-        for (String id : mCameraDevices.keySet()) {
-            CameraDevice camera = mCameraDevices.get(id);
-            if (camera != null) {
-                camera.close();
+            for (String id : mCameraDevices.keySet()) {
+                CameraDevice camera = mCameraDevices.get(id);
+                if (camera != null) {
+                    camera.close();
+                }
             }
-        }
-        mCameraDevices.clear();
+            mCameraDevices.clear();
 
-        for (ObjectDetector detector : mObjectDetectors.values()) {
-            detector.close();
+            mCameraDevices.clear();
         }
-        mObjectDetectors.clear();
 
-        for (ImageReader reader : mImageReaders.values()) {
-            reader.close();
+        mDetectorLock.writeLock().lock();
+        try {
+            for (ObjectDetector detector : mObjectDetectors.values()) {
+                detector.close();
+            }
+            mObjectDetectors.clear();
+        } finally {
+            mDetectorLock.writeLock().unlock();
         }
-        mImageReaders.clear();
+
+        synchronized (mLock) {
+            for (ImageReader reader : mImageReaders.values()) {
+                reader.close();
+            }
+            mImageReaders.clear();
+        }
     }
 
     @Override
     protected void onPause() {
+        synchronized (mLock) {
+            mIsPaused = true;
+        }
         closeCameras();
         stopBackgroundThreads();
         super.onPause();
@@ -717,6 +739,9 @@ public class MainActivity extends AppCompatActivity {
     @Override
     protected void onResume() {
         super.onResume();
+        synchronized (mLock) {
+            mIsPaused = false;
+        }
         // When the screen is turned off and turned back on, the SurfaceTexture is
         // already
         // available, and "onSurfaceTextureAvailable" will not be called. In that case,
