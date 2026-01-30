@@ -1,3 +1,0 @@
-Fix: remove duplicate camera cleanup execution
-
-Removed a duplicate call to `mCameraDevices.clear()` in the `closeCameras` method to avoid redundant operations during camera resource release.
