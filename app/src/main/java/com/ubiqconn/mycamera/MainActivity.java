@@ -705,7 +705,6 @@ public class MainActivity extends AppCompatActivity {
             }
             mCameraDevices.clear();
 
-            mCameraDevices.clear();
         }
 
         mDetectorLock.writeLock().lock();
